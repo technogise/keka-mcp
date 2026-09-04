@@ -1,6 +1,6 @@
 // One-off smoke test (not part of the deliverable): drives the running
 // Docker container as a real MCP client over stdio to prove the wiring
-// works - initialize, list tools, call each of the six tools.
+// works - initialize, list tools, call each of the seven tools.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -32,6 +32,7 @@ const expected = [
   "get_projects",
   "get_clients",
   "get_leaves",
+  "get_holidays",
 ];
 for (const t of tools.tools) {
   if (!expected.includes(t.name)) {
@@ -61,6 +62,7 @@ const r3 = await callAndPrint("get_employees", {});
 const r4 = await callAndPrint("get_projects", {});
 const r6 = await callAndPrint("get_clients", {});
 const r7 = await callAndPrint("get_leaves", { from: "2026-06-01", to: "2026-06-15" });
+const r8 = await callAndPrint("get_holidays", { calendarYear: 2026 });
 
 // 2) Intentionally invalid date range - must be rejected client-side
 //    WITHOUT ever calling the (dummy) Keka host.
@@ -73,6 +75,7 @@ for (const [label, r] of [
   ["get_projects", r4],
   ["get_clients", r6],
   ["get_leaves", r7],
+  ["get_holidays", r8],
 ]) {
   if (r.isError !== true) throw new Error(`${label}: expected isError=true against dummy credentials, got ${r.isError}`);
 }
