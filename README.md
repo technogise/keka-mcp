@@ -5,7 +5,7 @@ timesheet and HRIS APIs, read-only, over stdio. Runs in Docker on your
 machine and connects to Claude Desktop (or any MCP client) as a local
 stdio server.
 
-This is scaffolding only: five read-only tools, OAuth token handling, and
+This is scaffolding only: six read-only tools, OAuth token handling, and
 pagination. No reporting/analysis logic and no write/POST endpoints - that's
 a later phase, driven by prompting Claude against this server.
 
@@ -18,8 +18,9 @@ a later phase, driven by prompting Claude against this server.
 | `get_employees` | `GET /api/v1/hris/employees` | `pageSize`. Auto-paginates. |
 | `get_projects` | `GET /api/v1/psa/projects` | `pageSize`. Auto-paginates. |
 | `get_clients` | `GET /api/v1/psa/clients` | `pageSize`. Auto-paginates. Use to map a project's `clientId` to a readable client/customer name - see "Discovery: how a project maps to its client" below. |
+| `get_leaves` | `GET /api/v1/time/leaverequests` | `from`, `to`, `employeeIds`, `pageSize`. Auto-paginates. Max 60-day range, same as the timesheet tools. `status` (0-4) is preserved raw, no label - see the tools table note below. |
 
-All five auto-paginate internally (looping `pageNumber` until Keka reports no
+All six auto-paginate internally (looping `pageNumber` until Keka reports no
 more pages) and return the fully combined result set - the MCP client never
 has to page itself. `pageSize` only controls the chunk size of each request
 to Keka (capped at 200); it does not limit the total number of results returned.
@@ -130,9 +131,10 @@ involved:
 - **Pagination** (`pagination.test.ts`) - a mocked 3-page response combines
   correctly into one result set, a single-page response doesn't over-fetch,
   and an empty page stops the loop even if `totalPages` implies more. The
-  same three cases are repeated against a `Client`-shaped row (the shape
-  `get_clients` uses) to cover that tool's pagination specifically, since it
-  goes through the exact same `paginateAll` helper as every other tool.
+  same three cases are repeated against `Client`- and `LeaveRequest`-shaped
+  rows (the shapes `get_clients` and `get_leaves` use) to cover those
+  tools' pagination specifically, since they go through the exact same
+  `paginateAll` helper as every other tool.
 - **Date-range validation** (`dateRange.test.ts`) - accepts ranges up to
   and including `MAX_DATE_RANGE_DAYS` (60), rejects longer ranges with a
   message naming the limit and the dates given, rejects `from` after `to`,
@@ -155,8 +157,9 @@ used for the real-sandbox run below.
 
 Everything below was actually run in this environment, not assumed:
 
-- **Unit tests**: `npm test` - 15/15 passing (pagination x3, date-range x7,
-  token caching/refresh x5).
+- **Unit tests**: `npm test` - 21/21 passing (pagination x9 - generic +
+  `get_clients`-shaped + `get_leaves`-shaped, date-range x7, token
+  caching/refresh x5).
 - **TypeScript build**: `npm run build` completes with no errors.
 - **Docker build**: `docker build -t keka-mcp .` succeeds; final image has
   0 known vulnerabilities after `npm prune --omit=dev` (dev-only
@@ -174,18 +177,18 @@ Everything below was actually run in this environment, not assumed:
   `scripts/mcp-smoke-test.mjs`** (a real `@modelcontextprotocol/sdk` `Client`
   spawning `docker run --rm -i --env-file .env keka-mcp`, exactly as Claude
   Desktop would):
-  - `initialize` succeeds and `tools/list` returns exactly the 5 expected
+  - `initialize` succeeds and `tools/list` returns exactly the 6 expected
     tools: `get_timesheet_entries`, `get_project_time_entries`,
-    `get_employees`, `get_projects`, `get_clients`.
-  - Calling all 5 tools with dummy credentials against
+    `get_employees`, `get_projects`, `get_clients`, `get_leaves`.
+  - Calling all 6 tools with dummy credentials against
     `KEKA_TOKEN_URL=https://login.kekademo.com/connect/token`: each
     returned a clean `isError: true` MCP result with message
     `Keka token request failed (HTTP 400): invalid_client` - i.e. Keka's
     real login host was reached and gave a real OAuth rejection (not a
     network failure or a 404), and the server surfaced it cleanly instead
-    of crashing or leaking a stack trace to the client. `get_clients`
-    behaves identically to the other four here - same auth flow via
-    `getValidToken()`, same error shape.
+    of crashing or leaking a stack trace to the client. `get_clients` and
+    `get_leaves` behave identically to the other four here - same auth
+    flow via `getValidToken()`, same error shape.
   - Calling `get_timesheet_entries` with `from=2026-01-01, to=2026-12-01`
     (334 days) returned `isError: true` with a message naming the limit
     and the dates given, **without ever making a network call** (the
@@ -193,14 +196,16 @@ Everything below was actually run in this environment, not assumed:
     script now asserts the message names the *60-day* limit (updated to
     match the discovery below - it had been left asserting the original
     90-day spec value, which no longer matched the code).
-  - The container process was still alive and responsive after all 6 of
-    the above calls, including the 5 induced failures - confirming a failed
+  - The container process was still alive and responsive after all 7 of
+    the above calls, including the 6 induced failures - confirming a failed
     tool call does not take the process down.
 
 ### Live sandbox run (real credentials, `docker run --env-file .env keka-mcp` via a real MCP client over stdio)
 
-Once real values were in `.env`, I ran the five tools end-to-end against
-the real sandbox tenant (never printing the credential values themselves):
+Once real values were in `.env`, I ran the tools end-to-end against the
+real sandbox tenant (never printing the credential values themselves) -
+five in the original run, `get_leaves` added and verified in a later
+session:
 
 - **Auth**: real API-key exchange succeeded against `KEKA_TOKEN_URL`,
   returned a token with `expires_in: 86400`, no `refresh_token` (matches
@@ -227,8 +232,12 @@ the real sandbox tenant (never printing the credential values themselves):
   `pageSize=10` to force multi-page pagination and got the same 47 records
   combined correctly across **5 pages**, matching page-by-page against the
   raw API response with no duplicates or drops - a fourth confirmation of
-  real multi-page pagination, and the last of the five tools proven
-  end-to-end.
+  real multi-page pagination.
+- **`get_leaves`** (added later, wraps `GET /time/leaverequests`):
+  `isError: false` on the first try, no extra privilege grant needed
+  (unlike `get_employees`) - **294 leave requests across 3 pages**, a fifth
+  confirmation of real multi-page pagination, and the last of the six tools
+  proven end-to-end.
 - **Invalid-input handling**:
   - Out-of-range dates (`from=2026-01-01, to=2026-12-01`, 334 days):
     `isError: true` with the 90-day message, and (confirmed via the tool
@@ -332,6 +341,14 @@ phase should batch and pace its calls with this in mind.
 - **`get_employees` 403** - **resolved**. It was an HRIS/employees scope
   missing on the API key; you granted the privilege on the tenant and a
   re-run confirmed 237 employees across 3 pages. No code change was needed.
+- **`get_leaves`'s `status` field (0-4) has no label mapping at all** -
+  unlike timesheet status, you never gave an expected enum for leave
+  requests, and Keka's own reference doesn't publish one either ("specific
+  meanings not provided"). Unlike `timeEntries.ts`, `leaves.ts`
+  deliberately does **not** add a guessed `statusLabel` - the raw integer
+  is passed through as-is. If you know the mapping (something like
+  Pending/Approved/Rejected/Cancelled plus one more), let me know and I'll
+  add it the same way.
 
 ## Project structure
 
@@ -347,6 +364,7 @@ keka-mcp/
       employees.ts        # get_employees
       projects.ts         # get_projects
       clients.ts          # get_clients
+      leaves.ts           # get_leaves
     index.ts            # MCP server entrypoint, registers all tools
     __tests__/           # vitest unit tests
   scripts/

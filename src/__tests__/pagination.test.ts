@@ -122,3 +122,67 @@ describe("paginateAll (get_clients)", () => {
     expect(fetchPage).toHaveBeenCalledTimes(2);
   });
 });
+
+// get_leaves (src/tools/leaves.ts) uses this exact same paginateAll helper -
+// these cases exercise it against a LeaveRequest-shaped row to confirm that
+// tool's pagination behaves identically.
+interface LeaveRow {
+  id: string;
+  status: number;
+}
+
+function leavePage(
+  data: LeaveRow[],
+  pageNumber: number,
+  totalPages: number,
+  totalRecords: number
+): KekaPagedResponse<LeaveRow> {
+  return {
+    succeeded: true,
+    message: null,
+    errors: null,
+    data,
+    pageNumber,
+    pageSize: 2,
+    totalPages,
+    totalRecords,
+  };
+}
+
+describe("paginateAll (get_leaves)", () => {
+  it("combines leave-request results across 2 pages into one result set", async () => {
+    const pages = [
+      leavePage([{ id: "l1", status: 2 }, { id: "l2", status: 0 }], 1, 2, 3),
+      leavePage([{ id: "l3", status: 4 }], 2, 2, 3),
+    ];
+    const fetchPage = vi.fn(async (pageNumber: number) => pages[pageNumber - 1]);
+
+    const result = await paginateAll(fetchPage, 2);
+
+    expect(result.data.map((r) => r.id)).toEqual(["l1", "l2", "l3"]);
+    expect(result.pagesFetched).toBe(2);
+    expect(result.totalRecords).toBe(3);
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns all rows from a single-page leave-request result without over-fetching", async () => {
+    const fetchPage = vi.fn(async () => leavePage([{ id: "l1", status: 1 }], 1, 1, 1));
+
+    const result = await paginateAll(fetchPage, 100);
+
+    expect(result.data).toHaveLength(1);
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops on an empty leave-request page even if totalPages implies more remain", async () => {
+    const fetchPage = vi.fn(async (pageNumber: number) => {
+      if (pageNumber === 1) return leavePage([{ id: "l1", status: 3 }], 1, 4, 1);
+      return leavePage([], pageNumber, 4, 1);
+    });
+
+    const result = await paginateAll(fetchPage, 10);
+
+    expect(result.data).toHaveLength(1);
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+  });
+});
