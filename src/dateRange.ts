@@ -1,4 +1,4 @@
-// Shared date-range validation for the timesheet endpoints.
+// Shared date-range validation for the timesheet, leave and expense endpoints.
 // Validated client-side per spec, instead of letting Keka's API reject it.
 //
 // Keka's public API reference documents a 90-day maximum, but a live call
@@ -9,6 +9,11 @@
 // change.
 
 export const MAX_DATE_RANGE_DAYS = 60;
+
+// GET /expense/employees/{employeeId}/expenses enforces its own, larger
+// limit: confirmed live that a 90-day span is accepted and 91 days is
+// rejected with "Total days should not exceed more than 90 days".
+export const EXPENSE_MAX_DATE_RANGE_DAYS = 90;
 
 export class DateRangeError extends Error {
   constructor(message: string) {
@@ -21,11 +26,11 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**
  * Throws DateRangeError if `from`/`to` are invalid or span more than
- * MAX_DATE_RANGE_DAYS. If either side is omitted, validation is skipped -
- * Keka fills in its own default window (last 30 days) in that case, which is
- * always within the limit.
+ * `maxDays` (MAX_DATE_RANGE_DAYS by default). If either side is omitted,
+ * validation is skipped - Keka fills in its own default window in that
+ * case, which is always within the limit.
  */
-export function assertValidDateRange(from?: string, to?: string): void {
+export function assertValidDateRange(from?: string, to?: string, maxDays: number = MAX_DATE_RANGE_DAYS): void {
   if (!from || !to) return;
 
   const fromDate = new Date(from);
@@ -42,10 +47,10 @@ export function assertValidDateRange(from?: string, to?: string): void {
   }
 
   const diffDays = (toDate.getTime() - fromDate.getTime()) / MS_PER_DAY;
-  if (diffDays > MAX_DATE_RANGE_DAYS) {
+  if (diffDays > maxDays) {
     throw new DateRangeError(
       `Date range too large: ${from} to ${to} spans ${Math.ceil(diffDays)} days, but Keka's API allows ` +
-        `a maximum of ${MAX_DATE_RANGE_DAYS} days between 'from' and 'to'. Narrow the range and try again.`
+        `a maximum of ${maxDays} days between 'from' and 'to'. Narrow the range and try again.`
     );
   }
 }

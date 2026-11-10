@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// MCP server entrypoint. Registers all eight read-only Keka tools and serves
+// MCP server entrypoint. Registers all thirteen read-only Keka tools and serves
 // them over stdio. stdout is reserved for MCP protocol messages, so all
 // logging here goes to stderr.
 
@@ -14,6 +14,7 @@ import { registerClientTools } from "./tools/clients.js";
 import { registerLeaveTools } from "./tools/leaves.js";
 import { registerHolidayTools } from "./tools/holidays.js";
 import { registerLeaveBalanceTools } from "./tools/leaveBalances.js";
+import { registerExpenseTools } from "./tools/expenses.js";
 
 function log(...args: unknown[]): void {
   console.error("[keka-mcp]", ...args);
@@ -37,6 +38,7 @@ async function main(): Promise<void> {
   registerLeaveTools(server, client);
   registerHolidayTools(server, client);
   registerLeaveBalanceTools(server, client);
+  registerExpenseTools(server, client);
 
   // Last-resort safety net. Every tool handler already catches its own
   // errors (see tools/helpers.ts safeHandler), so these should not normally
@@ -52,7 +54,7 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log(
-    "connected via stdio. Registered tools: get_timesheet_entries, get_project_time_entries, get_employees, get_projects, get_clients, get_leaves, get_holidays, get_leavebalance"
+    "connected via stdio. Registered tools: get_timesheet_entries, get_project_time_entries, get_employees, get_projects, get_clients, get_leaves, get_holidays, get_leavebalance, get_expense_claims, get_employee_expenses, get_expense_categories, get_expense_policies, get_advance_requests"
   );
 }
 

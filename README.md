@@ -5,7 +5,7 @@ timesheet and HRIS APIs, read-only, over stdio. Runs in Docker on your
 machine and connects to Claude Desktop (or any MCP client) as a local
 stdio server.
 
-This is scaffolding only: eight read-only tools, OAuth token handling, and
+This is scaffolding only: thirteen read-only tools, OAuth token handling, and
 pagination. No reporting/analysis logic and no write/POST endpoints - that's
 a later phase, driven by prompting Claude against this server.
 
@@ -21,8 +21,13 @@ a later phase, driven by prompting Claude against this server.
 | `get_leaves` | `GET /api/v1/time/leaverequests` | `from`, `to`, `employeeIds`, `pageSize`. Auto-paginates. Max 60-day range, same as the timesheet tools. `status` (0-4) is preserved raw, no label - see the tools table note below. |
 | `get_holidays` | `GET /api/v1/time/holidayscalendar/{calendarId}/holidays` | `calendarId`, `calendarYear`, `pageSize`. Auto-paginates. Keka scopes holidays per calendar, not org-wide - if `calendarId` is omitted, this tool first looks up every calendar (`GET /api/v1/time/holidayscalendar`) and fetches + combines holidays from all of them, tagging each with `calendarId`/`calendarName`. Most tenants have exactly one calendar. |
 | `get_leavebalance` | `GET /api/v1/time/leavebalance` | `employeeIds`, `leaveTypeIds`, `pageSize`. Auto-paginates. Current (point-in-time) balances, so no date range. One row per employee with a `leaveBalance` array per leave type (`leaveTypeId`, `leaveTypeName`, `annualQuota`, `accruedAmount`, `consumedAmount`, `availableBalance`). `annualQuota` is `-1` for types with no fixed quota (e.g. Unpaid Leave) - preserved raw. |
+| `get_expense_claims` | `GET /api/v1/expense/claims` | `employeeIds`, `expenseClaimIds`, `lastModified`, `pageSize`. Auto-paginates. Organization-wide expense (reimbursement) claims, each with its line-item `expenses`. `approvalStatus` (0-6) and `paymentStatus` (0-2) preserved raw, no labels. `amount` is a string with currency (e.g. `"3700.00 INR"`), preserved raw. |
+| `get_employee_expenses` | `GET /api/v1/expense/employees/{employeeId}/expenses` | `employeeId` (required), `from`, `to`, `lastModified`, `pageSize`. Auto-paginates. **Max 90-day range** (this endpoint's own limit, confirmed live - not the 60 days of the timesheet tools). Keka requires an employee ID here; for org-wide data use `get_expense_claims`. |
+| `get_expense_categories` | `GET /api/v1/expense/categories` | `pageSize`. Auto-paginates. Use to map an expense's `expenseCategoryId` to a category name. |
+| `get_expense_policies` | `GET /api/v1/expensepolicies` | `pageSize`. Auto-paginates. Currency, what's allowed (claims / travel / cash advances), and per-category limits and receipt rules. |
+| `get_advance_requests` | `GET /api/v1/traveldesk/advancerequests` | `employeeIds`, `advanceRequestIds`, `approvalStatus` (0-6), `lastModified`, `pageSize`. Auto-paginates. Travel/cash advance requests with their advance line items. Statuses preserved raw. |
 
-All eight auto-paginate internally (looping `pageNumber` until Keka reports no
+All thirteen auto-paginate internally (looping `pageNumber` until Keka reports no
 more pages) and return the fully combined result set - the MCP client never
 has to page itself. `pageSize` only controls the chunk size of each request
 to Keka (capped at 200); it does not limit the total number of results returned.
@@ -135,13 +140,28 @@ involved:
   and an empty page stops the loop even if `totalPages` implies more. The
   same three cases are repeated against `Client`-, `LeaveRequest`-,
   `Holiday`-, and `EmployeeLeaveBalance`-shaped rows (the shapes
-  `get_clients`, `get_leaves`, `get_holidays`, and `get_leavebalance` use) to cover those tools' pagination specifically, since
-  they go through the exact same `paginateAll` helper as every other tool.
+  `get_clients`, `get_leaves`, `get_holidays`, and `get_leavebalance` use)
+  to cover those tools' pagination specifically, since they go through the
+  exact same `paginateAll` helper as every other tool.
 - **Date-range validation** (`dateRange.test.ts`) - accepts ranges up to
   and including `MAX_DATE_RANGE_DAYS` (60), rejects longer ranges with a
   message naming the limit and the dates given, rejects `from` after `to`,
   and skips validation when either side is omitted (matching Keka's own
-  default-window behavior).
+  default-window behavior). Also covers the 90-day
+  `EXPENSE_MAX_DATE_RANGE_DAYS` limit at the exact boundary confirmed live
+  (90 days accepted, 91 rejected).
+- **Expense tool handlers** (`expenses.test.ts`) - unlike the tests above,
+  these drive the five expense tools through a real MCP client/server pair
+  over an in-memory transport, with only the Keka HTTP client mocked. They
+  assert the exact path and query each tool sends (all filters, URL-encoded
+  `employeeId`, `approvalStatus: 0` not dropped as falsy, clamped
+  `pageSize`), multi-page combining, raw statuses and string amounts
+  preserved, schema rejections (missing `employeeId`, `pageSize` > 200,
+  `approvalStatus` > 6) and date-range rejections happening before any Keka
+  call, and Keka errors becoming clean `isError` results. Each was checked
+  against deliberately introduced bugs (dropping the 90-day limit, dropping
+  a filter, treating `approvalStatus: 0` as falsy) to confirm the tests
+  catch them.
 - **Token caching/expiry** (`auth.test.ts`) - reuses a cached token while
   valid, re-runs the API-key exchange on expiry when no `refresh_token` was
   issued, uses the refresh endpoint instead when one was, and falls back to
@@ -159,10 +179,10 @@ used for the real-sandbox run below.
 
 Everything below was actually run in this environment, not assumed:
 
-- **Unit tests**: `npm test` - 27/27 passing (pagination x15 - generic +
+- **Unit tests**: `npm test` - 46/46 passing (pagination x15 - generic +
   `get_clients`-shaped + `get_leaves`-shaped + `get_holidays`-shaped +
-  `get_leavebalance`-shaped,
-  date-range x7, token caching/refresh x5).
+  `get_leavebalance`-shaped, date-range x10, expense tool handlers x16,
+  token caching/refresh x5).
 - **TypeScript build**: `npm run build` completes with no errors.
 - **Docker build**: `docker build -t keka-mcp .` succeeds; final image has
   0 known vulnerabilities after `npm prune --omit=dev` (dev-only
@@ -180,19 +200,21 @@ Everything below was actually run in this environment, not assumed:
   `scripts/mcp-smoke-test.mjs`** (a real `@modelcontextprotocol/sdk` `Client`
   spawning `docker run --rm -i --env-file .env keka-mcp`, exactly as Claude
   Desktop would):
-  - `initialize` succeeds and `tools/list` returns exactly the 8 expected
+  - `initialize` succeeds and `tools/list` returns exactly the 13 expected
     tools: `get_timesheet_entries`, `get_project_time_entries`,
     `get_employees`, `get_projects`, `get_clients`, `get_leaves`,
-    `get_holidays`, `get_leavebalance`.
-  - Calling all 8 tools with dummy credentials against
+    `get_holidays`, `get_leavebalance`, `get_expense_claims`,
+    `get_employee_expenses`, `get_expense_categories`,
+    `get_expense_policies`, `get_advance_requests`.
+  - Calling all 13 tools with dummy credentials against
     `KEKA_TOKEN_URL=https://login.kekademo.com/connect/token`: each
     returned a clean `isError: true` MCP result with message
     `Keka token request failed (HTTP 400): invalid_client` - i.e. Keka's
     real login host was reached and gave a real OAuth rejection (not a
     network failure or a 404), and the server surfaced it cleanly instead
     of crashing or leaking a stack trace to the client. `get_clients`,
-    `get_leaves`, `get_holidays`, and `get_leavebalance` behave
-    identically to the other four
+    `get_leaves`, `get_holidays`, `get_leavebalance` and the five
+    expense tools behave identically to the other four
     here - same auth flow via `getValidToken()`, same error shape.
   - Calling `get_timesheet_entries` with `from=2026-01-01, to=2026-12-01`
     (334 days) returned `isError: true` with a message naming the limit
@@ -201,16 +223,20 @@ Everything below was actually run in this environment, not assumed:
     script now asserts the message names the *60-day* limit (updated to
     match the discovery below - it had been left asserting the original
     90-day spec value, which no longer matched the code).
-  - The container process was still alive and responsive after all 9 of
-    the above calls, including the 8 induced failures - confirming a failed
+  - `get_employee_expenses` with a 91-day range is likewise rejected
+    client-side naming the *90-day* limit, while an exactly-90-day range
+    passes validation and only fails on the dummy credentials.
+  - The container process was still alive and responsive after all 16 of
+    the above calls, including the 16 induced failures - confirming a failed
     tool call does not take the process down.
 
 ### Live sandbox run (real credentials, `docker run --env-file .env keka-mcp` via a real MCP client over stdio)
 
 Once real values were in `.env`, I ran the tools end-to-end against the
 real sandbox tenant (never printing the credential values themselves) -
-five in the original run, `get_leaves`, `get_holidays`, and
-`get_leavebalance` each added and verified in later sessions:
+five in the original run, `get_leaves`, `get_holidays`,
+`get_leavebalance` and the five expense tools each added and verified in
+later sessions:
 
 - **Auth**: real API-key exchange succeeded against `KEKA_TOKEN_URL`,
   returned a token with `expires_in: 86400`, no `refresh_token` (matches
@@ -260,8 +286,26 @@ five in the original run, `get_leaves`, `get_holidays`, and
   out to be `leaveTypeId` (not `leaveTypeIdentifier` as on leave
   requests), and Unpaid Leave comes back with `annualQuota: -1` (no fixed
   quota). Filtering by one `employeeIds` + one `leaveTypeIds` value
-  correctly narrowed the result to 1 employee with 1 leave type - the
-  last of the eight tools proven end-to-end.
+  correctly narrowed the result to 1 employee with 1 leave type.
+- **Expense tools** (added later; all 13 tools re-run live in the same
+  session as a regression check, all `isError: false` with data). No extra
+  privilege grant needed for any of the five:
+  - `get_expense_claims`: **388 claims across 4 pages**, `count ==
+    totalRecords`, no duplicates across pages; `pageSize=50` returned the
+    same 388 over 8 pages. `employeeIds` (one and two comma-separated),
+    `expenseClaimIds`, and `lastModified` each returned exactly the subset
+    that filtering the full list locally gives.
+  - `get_employee_expenses`: an 89-day window found a known expense from
+    the claims data; no range works (Keka applies a short default window);
+    91 days is rejected client-side. An unknown employee ID returns 0 rows,
+    not an error - same as the other filters.
+  - `get_expense_categories`: all 19 categories; every one of the 12
+    distinct `expenseCategoryId`s used on claims resolves to one.
+  - `get_expense_policies`: 1 policy (INR).
+  - `get_advance_requests`: all 10 requests; `employeeIds`,
+    `advanceRequestIds`, and `approvalStatus` each matched local filtering,
+    and `approvalStatus=0` (no such rows) returned 0 - i.e. the filter is
+    really applied, not silently ignored.
 - **Invalid-input handling**:
   - Out-of-range dates (`from=2026-01-01, to=2026-12-01`, 334 days):
     `isError: true` with the 90-day message, and (confirmed via the tool
@@ -293,6 +337,28 @@ live sandbox actually enforces (unit tests and tool descriptions updated to
 match, Docker image rebuilt) - you confirmed this rather than keeping the
 spec's original 90. If a different tenant/plan really does get 90 days,
 that's the one constant to change back.
+
+### Discovery: expense endpoints
+
+- **Statuses have no published labels.** Keka's reference only gives
+  integer ranges: claim/advance `approvalStatus` 0-6, `paymentStatus` 0-2,
+  per-advance `status` 0-4. Live distribution on claims: `approvalStatus`
+  2/3/4/5 and `paymentStatus` 0/1/2. Passed through raw, like
+  `get_leaves`'s `status`.
+- **`amount` is a string with the currency attached** (`"3700.00 INR"`),
+  not a number - kept raw so the currency isn't lost.
+- **`GET /expense/employees/expenses`** (the variant without an ID in the
+  path) returns 400 "Employee ID is required", so only the
+  `/{employeeId}/expenses` form is wrapped.
+- **`/expense/employees/{employeeId}/expenses` allows 90 days**, unlike the
+  60 days enforced on the timesheet endpoints: 2026-01-01..2026-04-01
+  accepted, ..2026-04-02 rejected with "Total days should not exceed more
+  than 90 days".
+- **`GET /payroll/employees/componentclaims`** (claims against reimbursable
+  salary components) returned **403 "You don't have privilege to access
+  this resource"** for this API key, so no tool wraps it. Adding one needs
+  the Payroll privilege granted to the API key first, as happened for
+  `get_employees`.
 
 ### Discovery: how a project maps to its client
 
@@ -380,7 +446,7 @@ phase should batch and pace its calls with this in mind.
 keka-mcp/
   src/
     auth.ts            # OAuth token fetch + refresh (TokenManager)
-    dateRange.ts        # date-range validation, shared by both timesheet tools
+    dateRange.ts        # date-range validation (timesheet, leave and expense tools)
     kekaClient.ts        # HTTP wrapper: base URL, auth header, pagination helper
     tools/
       helpers.ts         # shared error handling / logging / JSON result wrapper
@@ -391,6 +457,9 @@ keka-mcp/
       leaves.ts           # get_leaves
       holidays.ts          # get_holidays
       leaveBalances.ts    # get_leavebalance
+      expenses.ts         # get_expense_claims, get_employee_expenses,
+                          # get_expense_categories, get_expense_policies,
+                          # get_advance_requests
     index.ts            # MCP server entrypoint, registers all tools
     __tests__/           # vitest unit tests
   scripts/

@@ -1,6 +1,6 @@
 // One-off smoke test (not part of the deliverable): drives the running
 // Docker container as a real MCP client over stdio to prove the wiring
-// works - initialize, list tools, call each of the eight tools.
+// works - initialize, list tools, call each of the thirteen tools.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -34,6 +34,11 @@ const expected = [
   "get_leaves",
   "get_holidays",
   "get_leavebalance",
+  "get_expense_claims",
+  "get_employee_expenses",
+  "get_expense_categories",
+  "get_expense_policies",
+  "get_advance_requests",
 ];
 for (const t of tools.tools) {
   if (!expected.includes(t.name)) {
@@ -65,6 +70,11 @@ const r6 = await callAndPrint("get_clients", {});
 const r7 = await callAndPrint("get_leaves", { from: "2026-06-01", to: "2026-06-15" });
 const r8 = await callAndPrint("get_holidays", { calendarYear: 2026 });
 const r9 = await callAndPrint("get_leavebalance", {});
+const r10 = await callAndPrint("get_expense_claims", {});
+const r11 = await callAndPrint("get_employee_expenses", { employeeId: "emp-123", from: "2026-09-01", to: "2026-10-31" });
+const r12 = await callAndPrint("get_expense_categories", {});
+const r13 = await callAndPrint("get_expense_policies", {});
+const r14 = await callAndPrint("get_advance_requests", {});
 
 // 2) Intentionally invalid date range - must be rejected client-side
 //    WITHOUT ever calling the (dummy) Keka host.
@@ -79,6 +89,11 @@ for (const [label, r] of [
   ["get_leaves", r7],
   ["get_holidays", r8],
   ["get_leavebalance", r9],
+  ["get_expense_claims", r10],
+  ["get_employee_expenses", r11],
+  ["get_expense_categories", r12],
+  ["get_expense_policies", r13],
+  ["get_advance_requests", r14],
 ]) {
   if (r.isError !== true) throw new Error(`${label}: expected isError=true against dummy credentials, got ${r.isError}`);
 }
@@ -86,6 +101,19 @@ if (r5.isError !== true) throw new Error("60-day validation: expected isError=tr
 // Real sandbox limit is 60 days, not the 90 originally spec'd - see README "Discovery: the
 // real date-range limit is 60 days, not 90".
 if (!/60 days/.test(r5.content[0].text)) throw new Error("60-day validation: error message doesn't mention the 60-day limit");
+
+// get_employee_expenses has its own 90-day limit (confirmed live) - a 91-day
+// range must also be rejected client-side, and a 61-90 day range must NOT be
+// rejected by the 60-day timesheet limit (r11 above spans 60 days and fails
+// only on dummy credentials).
+const r15 = await callAndPrint("get_employee_expenses", { employeeId: "emp-123", from: "2026-01-01", to: "2026-04-02" });
+if (r15.isError !== true || !/90 days/.test(r15.content[0].text) || !/Invalid request/.test(r15.content[0].text)) {
+  throw new Error("90-day validation: expected a client-side 'Invalid request' naming the 90-day limit");
+}
+const r16 = await callAndPrint("get_employee_expenses", { employeeId: "emp-123", from: "2026-01-01", to: "2026-04-01" });
+if (r16.isError !== true || /Invalid request/.test(r16.content[0].text)) {
+  throw new Error("90-day validation: an exactly-90-day range should pass validation and only fail on auth");
+}
 
 console.log("\n=== ALL SMOKE CHECKS PASSED ===");
 await client.close();
