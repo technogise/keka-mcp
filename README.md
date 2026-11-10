@@ -5,7 +5,7 @@ timesheet and HRIS APIs, read-only, over stdio. Runs in Docker on your
 machine and connects to Claude Desktop (or any MCP client) as a local
 stdio server.
 
-This is scaffolding only: seven read-only tools, OAuth token handling, and
+This is scaffolding only: eight read-only tools, OAuth token handling, and
 pagination. No reporting/analysis logic and no write/POST endpoints - that's
 a later phase, driven by prompting Claude against this server.
 
@@ -20,8 +20,9 @@ a later phase, driven by prompting Claude against this server.
 | `get_clients` | `GET /api/v1/psa/clients` | `pageSize`. Auto-paginates. Use to map a project's `clientId` to a readable client/customer name - see "Discovery: how a project maps to its client" below. |
 | `get_leaves` | `GET /api/v1/time/leaverequests` | `from`, `to`, `employeeIds`, `pageSize`. Auto-paginates. Max 60-day range, same as the timesheet tools. `status` (0-4) is preserved raw, no label - see the tools table note below. |
 | `get_holidays` | `GET /api/v1/time/holidayscalendar/{calendarId}/holidays` | `calendarId`, `calendarYear`, `pageSize`. Auto-paginates. Keka scopes holidays per calendar, not org-wide - if `calendarId` is omitted, this tool first looks up every calendar (`GET /api/v1/time/holidayscalendar`) and fetches + combines holidays from all of them, tagging each with `calendarId`/`calendarName`. Most tenants have exactly one calendar. |
+| `get_leavebalance` | `GET /api/v1/time/leavebalance` | `employeeIds`, `leaveTypeIds`, `pageSize`. Auto-paginates. Current (point-in-time) balances, so no date range. One row per employee with a `leaveBalance` array per leave type (`leaveTypeId`, `leaveTypeName`, `annualQuota`, `accruedAmount`, `consumedAmount`, `availableBalance`). `annualQuota` is `-1` for types with no fixed quota (e.g. Unpaid Leave) - preserved raw. |
 
-All seven auto-paginate internally (looping `pageNumber` until Keka reports no
+All eight auto-paginate internally (looping `pageNumber` until Keka reports no
 more pages) and return the fully combined result set - the MCP client never
 has to page itself. `pageSize` only controls the chunk size of each request
 to Keka (capped at 200); it does not limit the total number of results returned.
@@ -132,9 +133,9 @@ involved:
 - **Pagination** (`pagination.test.ts`) - a mocked 3-page response combines
   correctly into one result set, a single-page response doesn't over-fetch,
   and an empty page stops the loop even if `totalPages` implies more. The
-  same three cases are repeated against `Client`-, `LeaveRequest`-, and
-  `Holiday`-shaped rows (the shapes `get_clients`, `get_leaves`, and
-  `get_holidays` use) to cover those tools' pagination specifically, since
+  same three cases are repeated against `Client`-, `LeaveRequest`-,
+  `Holiday`-, and `EmployeeLeaveBalance`-shaped rows (the shapes
+  `get_clients`, `get_leaves`, `get_holidays`, and `get_leavebalance` use) to cover those tools' pagination specifically, since
   they go through the exact same `paginateAll` helper as every other tool.
 - **Date-range validation** (`dateRange.test.ts`) - accepts ranges up to
   and including `MAX_DATE_RANGE_DAYS` (60), rejects longer ranges with a
@@ -158,8 +159,9 @@ used for the real-sandbox run below.
 
 Everything below was actually run in this environment, not assumed:
 
-- **Unit tests**: `npm test` - 24/24 passing (pagination x12 - generic +
-  `get_clients`-shaped + `get_leaves`-shaped + `get_holidays`-shaped,
+- **Unit tests**: `npm test` - 27/27 passing (pagination x15 - generic +
+  `get_clients`-shaped + `get_leaves`-shaped + `get_holidays`-shaped +
+  `get_leavebalance`-shaped,
   date-range x7, token caching/refresh x5).
 - **TypeScript build**: `npm run build` completes with no errors.
 - **Docker build**: `docker build -t keka-mcp .` succeeds; final image has
@@ -178,18 +180,19 @@ Everything below was actually run in this environment, not assumed:
   `scripts/mcp-smoke-test.mjs`** (a real `@modelcontextprotocol/sdk` `Client`
   spawning `docker run --rm -i --env-file .env keka-mcp`, exactly as Claude
   Desktop would):
-  - `initialize` succeeds and `tools/list` returns exactly the 7 expected
+  - `initialize` succeeds and `tools/list` returns exactly the 8 expected
     tools: `get_timesheet_entries`, `get_project_time_entries`,
     `get_employees`, `get_projects`, `get_clients`, `get_leaves`,
-    `get_holidays`.
-  - Calling all 7 tools with dummy credentials against
+    `get_holidays`, `get_leavebalance`.
+  - Calling all 8 tools with dummy credentials against
     `KEKA_TOKEN_URL=https://login.kekademo.com/connect/token`: each
     returned a clean `isError: true` MCP result with message
     `Keka token request failed (HTTP 400): invalid_client` - i.e. Keka's
     real login host was reached and gave a real OAuth rejection (not a
     network failure or a 404), and the server surfaced it cleanly instead
     of crashing or leaking a stack trace to the client. `get_clients`,
-    `get_leaves`, and `get_holidays` behave identically to the other four
+    `get_leaves`, `get_holidays`, and `get_leavebalance` behave
+    identically to the other four
     here - same auth flow via `getValidToken()`, same error shape.
   - Calling `get_timesheet_entries` with `from=2026-01-01, to=2026-12-01`
     (334 days) returned `isError: true` with a message naming the limit
@@ -198,16 +201,16 @@ Everything below was actually run in this environment, not assumed:
     script now asserts the message names the *60-day* limit (updated to
     match the discovery below - it had been left asserting the original
     90-day spec value, which no longer matched the code).
-  - The container process was still alive and responsive after all 8 of
-    the above calls, including the 7 induced failures - confirming a failed
+  - The container process was still alive and responsive after all 9 of
+    the above calls, including the 8 induced failures - confirming a failed
     tool call does not take the process down.
 
 ### Live sandbox run (real credentials, `docker run --env-file .env keka-mcp` via a real MCP client over stdio)
 
 Once real values were in `.env`, I ran the tools end-to-end against the
 real sandbox tenant (never printing the credential values themselves) -
-five in the original run, `get_leaves` and `get_holidays` each added and
-verified in later sessions:
+five in the original run, `get_leaves`, `get_holidays`, and
+`get_leavebalance` each added and verified in later sessions:
 
 - **Auth**: real API-key exchange succeeded against `KEKA_TOKEN_URL`,
   returned a token with `expires_in: 86400`, no `refresh_token` (matches
@@ -249,7 +252,16 @@ verified in later sessions:
   the multi-calendar combine path, but the per-calendar pagination is the
   same `paginateAll` proven five times over already, and the calendar
   lookup call and the holidays call are each single, unremarkable GETs -
-  the last of the seven tools proven end-to-end.
+  the seventh tool proven end-to-end.
+- **`get_leavebalance`** (added later, wraps `GET /time/leavebalance`):
+  `isError: false` on the first try, no extra privilege grant needed -
+  **243 employees' balances across 3 pages**. Each row carries a
+  `leaveBalance` array per leave type; the real per-type ID field turned
+  out to be `leaveTypeId` (not `leaveTypeIdentifier` as on leave
+  requests), and Unpaid Leave comes back with `annualQuota: -1` (no fixed
+  quota). Filtering by one `employeeIds` + one `leaveTypeIds` value
+  correctly narrowed the result to 1 employee with 1 leave type - the
+  last of the eight tools proven end-to-end.
 - **Invalid-input handling**:
   - Out-of-range dates (`from=2026-01-01, to=2026-12-01`, 334 days):
     `isError: true` with the 90-day message, and (confirmed via the tool
@@ -378,6 +390,7 @@ keka-mcp/
       clients.ts          # get_clients
       leaves.ts           # get_leaves
       holidays.ts          # get_holidays
+      leaveBalances.ts    # get_leavebalance
     index.ts            # MCP server entrypoint, registers all tools
     __tests__/           # vitest unit tests
   scripts/

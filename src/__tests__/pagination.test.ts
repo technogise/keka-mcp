@@ -252,3 +252,74 @@ describe("paginateAll (get_holidays)", () => {
     expect(fetchPage).toHaveBeenCalledTimes(2);
   });
 });
+
+// get_leavebalance (src/tools/leaveBalances.ts) uses this exact same
+// paginateAll helper - these cases exercise it against an
+// EmployeeLeaveBalance-shaped row (one row per employee, nested per-type
+// balances) to confirm that tool's pagination behaves identically.
+interface LeaveBalanceRow {
+  employeeIdentifier: string;
+  leaveBalance: { leaveTypeName: string; availableBalance: number }[];
+}
+
+function leaveBalancePage(
+  data: LeaveBalanceRow[],
+  pageNumber: number,
+  totalPages: number,
+  totalRecords: number
+): KekaPagedResponse<LeaveBalanceRow> {
+  return {
+    succeeded: true,
+    message: null,
+    errors: null,
+    data,
+    pageNumber,
+    pageSize: 2,
+    totalPages,
+    totalRecords,
+  };
+}
+
+const bal = (id: string): LeaveBalanceRow => ({
+  employeeIdentifier: id,
+  leaveBalance: [{ leaveTypeName: "Casual Leave", availableBalance: 4 }],
+});
+
+describe("paginateAll (get_leavebalance)", () => {
+  it("combines leave balance results across 2 pages into one result set", async () => {
+    const pages = [
+      leaveBalancePage([bal("e1"), bal("e2")], 1, 2, 3),
+      leaveBalancePage([bal("e3")], 2, 2, 3),
+    ];
+    const fetchPage = vi.fn(async (pageNumber: number) => pages[pageNumber - 1]);
+
+    const result = await paginateAll(fetchPage, 2);
+
+    expect(result.data.map((r) => r.employeeIdentifier)).toEqual(["e1", "e2", "e3"]);
+    expect(result.data[0].leaveBalance[0].availableBalance).toBe(4);
+    expect(result.pagesFetched).toBe(2);
+    expect(result.totalRecords).toBe(3);
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns all rows from a single-page leave balance result without over-fetching", async () => {
+    const fetchPage = vi.fn(async () => leaveBalancePage([bal("e1")], 1, 1, 1));
+
+    const result = await paginateAll(fetchPage, 100);
+
+    expect(result.data).toHaveLength(1);
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops on an empty leave balance page even if totalPages implies more remain", async () => {
+    const fetchPage = vi.fn(async (pageNumber: number) => {
+      if (pageNumber === 1) return leaveBalancePage([bal("e1")], 1, 4, 1);
+      return leaveBalancePage([], pageNumber, 4, 1);
+    });
+
+    const result = await paginateAll(fetchPage, 10);
+
+    expect(result.data).toHaveLength(1);
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+  });
+});
