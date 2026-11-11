@@ -85,6 +85,28 @@ the server process itself keeps running.
 
 ## Docker
 
+### Prebuilt image (recommended for users)
+
+A public multi-arch image (Intel and Apple Silicon) is published to GitHub
+Container Registry on every push to `main`:
+
+```bash
+docker pull ghcr.io/technogise/keka-mcp:latest
+docker run --env-file .env ghcr.io/technogise/keka-mcp:latest
+```
+
+No clone, Node.js, or build is needed - just Docker and a `.env` file (copy
+the contents of `.env.example` and fill in real values). Tags published:
+
+- `latest` - current `main`
+- `sha-<short-sha>` - a specific commit, for pinning
+- `<version>` (e.g. `1.2.0`) - when a `v1.2.0` git tag is pushed
+
+Publishing is done by `.github/workflows/docker-publish.yml`, which runs the
+unit tests first and only pushes if they pass.
+
+### Building locally (for development)
+
 ```bash
 docker build -t keka-mcp .
 docker run --env-file .env keka-mcp
@@ -113,9 +135,9 @@ Add to `claude_desktop_config.json`:
     "keka": {
       "command": "docker",
       "args": [
-        "run", "--rm", "-i",
+        "run", "--rm", "-i", "--pull=always",
         "--env-file", "/absolute/path/to/keka-mcp/.env",
-        "keka-mcp"
+        "ghcr.io/technogise/keka-mcp:latest"
       ]
     }
   }
@@ -124,7 +146,22 @@ Add to `claude_desktop_config.json`:
 
 Restart Claude Desktop after editing the config. Use an absolute path to
 `.env` since Claude Desktop does not run this command from the project
-directory.
+directory. `--pull=always` picks up the latest published image on each
+start; drop it (or pin a `sha-...` tag) if you want a fixed version, or
+replace the image with `keka-mcp` to use a locally built one.
+
+## ChatGPT desktop (Codex) configuration
+
+ChatGPT on the web can't reach a local stdio server; use the ChatGPT desktop
+app. Either add a STDIO server under **Settings -> MCP servers** with
+command `docker` and the same args as above, or add to
+`~/.codex/config.toml`:
+
+```toml
+[mcp_servers.keka]
+command = "docker"
+args = ["run", "--rm", "-i", "--pull=always", "--env-file", "/absolute/path/to/keka-mcp/.env", "ghcr.io/technogise/keka-mcp:latest"]
+```
 
 ## Testing
 
